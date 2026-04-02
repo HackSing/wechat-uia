@@ -5,7 +5,7 @@ description: Self-contained Windows WeChat 4.x automation skill backed by vendor
 
 # Wechat Uia Cli
 
-Use `python scripts/run_wechat_skill.py ...` as the primary entrypoint. Do not depend on `D:\Project\wx4py`; this skill vendors the runtime under `scripts/vendor/`.
+Use `python scripts/run_wechat_skill.py ...` as the primary entrypoint. Do not depend on `D:\Project\wx4py`; this skill vendors the runtime under `scripts/vendor/`. The wrapper also auto-installs missing third-party Python packages on first use through `python -m pip install`.
 
 ## Quick Start
 
@@ -29,7 +29,7 @@ python scripts/run_wechat_skill.py export-history --target "文件传输助手" 
 
 ## Workflow
 
-1. Run `check-env` when the environment has not been verified in the current session.
+1. Run `check-env` when the environment has not been verified in the current session. This also triggers runtime dependency bootstrap.
 2. Prefer a low-risk probe first:
    - `search`
    - `snapshot`
@@ -75,6 +75,7 @@ For reusable code examples, read files under `references/examples/`.
 
 - Keep WeChat open and logged in on Windows.
 - Assume the WeChat window must stay in the foreground during automation.
+- Allow the wrapper to install missing Python packages on first use.
 - Prefer `target_type=contact` unless the target is explicitly a group.
 - Validate risky operations on `文件传输助手` before running broader sends.
 - Use small `--max-count` values first when collecting chat history.

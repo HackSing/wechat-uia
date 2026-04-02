@@ -8,6 +8,8 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from runtime_bootstrap import ensure_runtime
+
 
 SKILL_DIR = Path(__file__).resolve().parents[1]
 VENDOR_DIR = SKILL_DIR / "scripts" / "vendor"
@@ -171,26 +173,16 @@ def _build_snapshot(client: Any) -> dict[str, Any]:
 
 def _cmd_check_env() -> int:
     _ensure_vendor_path()
-    modules = [
-        "win32api",
-        "win32con",
-        "win32gui",
-        "comtypes",
-        "pyperclip",
-        "markdown",
-        "bs4",
-        "PIL",
-        "wx4py",
-        "wechat_rpa",
-    ]
-    checks = []
-    missing = []
+    bootstrap = ensure_runtime(auto_install=True)
+    modules = ["wx4py", "wechat_rpa"]
+    local_checks = []
+    missing_local = []
     for module_name in modules:
         try:
             module = importlib.import_module(module_name)
-            checks.append({"module": module_name, "ok": True, "path": getattr(module, "__file__", "built-in")})
+            local_checks.append({"module": module_name, "ok": True, "path": getattr(module, "__file__", "built-in")})
         except Exception as exc:
-            checks.append(
+            local_checks.append(
                 {
                     "module": module_name,
                     "ok": False,
@@ -198,17 +190,18 @@ def _cmd_check_env() -> int:
                     "error": str(exc),
                 }
             )
-            missing.append(module_name)
+            missing_local.append(module_name)
     payload = {
-        "ok": not missing,
+        "ok": bootstrap["ok"] and not missing_local,
         "action": "check-env",
         "python": sys.executable,
         "cwd": os.getcwd(),
         "vendor_dir": str(VENDOR_DIR),
-        "checks": checks,
+        "runtime_bootstrap": bootstrap,
+        "checks": local_checks,
     }
-    if missing:
-        payload["missing_modules"] = missing
+    if missing_local:
+        payload["missing_modules"] = missing_local
     return _emit(payload)
 
 
@@ -521,6 +514,19 @@ def main(argv: list[str] | None = None) -> int:
 
     if hasattr(args, "disable") and getattr(args, "disable"):
         setattr(args, "enable", False)
+
+    if args.command != "check-env":
+        bootstrap = ensure_runtime(auto_install=True)
+        if not bootstrap["ok"]:
+            return _emit(
+                {
+                    "ok": False,
+                    "action": args.command,
+                    "error_type": "RuntimeDependencyError",
+                    "error": "failed to install required Python packages",
+                    "runtime_bootstrap": bootstrap,
+                }
+            )
 
     if args.command == "check-env":
         return _cmd_check_env()

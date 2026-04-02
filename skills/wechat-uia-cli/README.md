@@ -27,7 +27,7 @@ python scripts/run_wechat_uia.py ...
 - 微信 PC 版已经打开并登录
 - 操作期间尽量不要手动点微信窗口
 - 微信窗口最好保持前台
-- Python 依赖已经装好
+- 机器可以正常执行 `python -m pip install`
 
 先做一次环境检查：
 
@@ -36,6 +36,27 @@ python scripts/run_wechat_skill.py check-env
 ```
 
 如果返回 JSON 里 `ok: true`，说明运行环境基本可用。
+
+## 自动安装依赖
+
+这个 skill 在首次使用时会先检测 Python 第三方包。
+
+如果缺少下面这些依赖，会自动安装：
+
+- `pywin32`
+- `comtypes`
+- `pyperclip`
+- `markdown`
+- `beautifulsoup4`
+- `Pillow`
+
+安装状态会记录到 skill 根目录下的 `.runtime-bootstrap.json`。
+
+也就是说：
+
+- 不依赖外部 `wx4py` 源码仓库
+- 也不要求你提前手工把第三方包装好
+- 首次运行任意命令时，skill 会先补齐环境，再执行真正任务
 
 ## 自然语言任务清单
 
@@ -111,7 +132,7 @@ python scripts/run_wechat_skill.py check-env
 
 如果是第一次跑，建议按这个顺序：
 
-1. 先检查环境：
+1. 先检查环境并让 skill 自动补依赖：
 
 ```bash
 python scripts/run_wechat_skill.py check-env
