@@ -1,0 +1,17 @@
+[project]
+name = "wechat-uia"
+version = "0.1.0"
+description = "UIA-based CLI for exporting and analyzing WeChat chat history via wx4py"
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = []
+
+[project.scripts]
+wechat-uia = "wechat_uia.cli:main"
+
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["wechat_uia"]
