@@ -1,0 +1,14 @@
+{
+  "name": "send-message-demo",
+  "steps": [
+    {
+      "action": "open_chat",
+      "target": "文件传输助手",
+      "target_type": "contact"
+    },
+    {
+      "action": "send_message",
+      "message": "wx4py CLI workflow test"
+    }
+  ]
+}

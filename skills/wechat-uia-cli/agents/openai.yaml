@@ -1,0 +1,4 @@
+interface:
+  display_name: "WeChat UIA Automation"
+  short_description: "Self-contained WeChat 4.x automation and history export"
+  default_prompt: "Use $wechat-uia-cli to automate WeChat 4.x on Windows through the skill's self-contained wrapper for messaging, files, group management, UI inspection, and history export."
