@@ -92,6 +92,55 @@ Desktop export dialog automation:
 python scripts/run_wechat_skill.py desktop-export --targets "项目群" "文件传输助手" --time-range-label "三个月内" --content-scope-label "部分聊天记录"
 ```
 
+Daily report batch fetch (for a configured customer list):
+
+```bash
+python scripts/run_wechat_skill.py daily-report-fetch --config config/customers.yaml --since today
+python scripts/run_wechat_skill.py daily-report-fetch --config config/customers.yaml --group 战略客户
+python scripts/run_wechat_skill.py daily-report-fetch --config config/customers.yaml --customer acme --customer betaco --no-cache
+```
+
+`daily-report-fetch` output shape:
+
+```json
+{
+  "ok": true,
+  "action": "daily_report_fetch",
+  "args": { "config": "...", "since": "today", "max_count": 300, "group": null, "tag": null, "customer": null, "cache_dir": "...", "no_cache": false, "stop_on_error": false, "skip_empty": false },
+  "result": {
+    "report_date": "2026-04-05",
+    "generated_at": "2026-04-05T18:02:11",
+    "customer_count": 3,
+    "success_count": 2,
+    "empty_count": 0,
+    "failure_count": 1,
+    "from_cache": false,
+    "cache_file": "<skill>/.cache/daily-report/2026-04-05.json",
+    "customers": [
+      {
+        "id": "acme",
+        "display_name": "张伟",
+        "status": "ok",
+        "target_used": "张伟-Acme采购",
+        "tried_targets": ["张伟-Acme采购"],
+        "target_type": "contact",
+        "message_count": 12,
+        "first_message_time": "09:14",
+        "last_message_time": "17:48",
+        "messages": [{ "type": "text", "content": "...", "time": "09:14" }],
+        "truncated": false,
+        "error": null, "error_type": null,
+        "tags": ["战略客户"], "priority": "high", "company": "Acme 集团", "notes": "...",
+        "from_cache": false,
+        "fetched_at": "2026-04-05T18:01:58"
+      }
+    ]
+  }
+}
+```
+
+Each customer entry sets `status` to one of `ok` / `empty` / `not_found` / `error`. Per-customer failures do NOT set the top-level `ok` to `false`; the batch only fails on client-level errors (e.g., WeChat not running) or config parse errors. The `messages` array is passed through unchanged from `get-chat-history`, so sender information is still unavailable (an upstream AI layer is expected to infer sender from context). Template config lives at `config/customers.yaml.example`.
+
 ## Notes
 
 - Prefer `check-env` once per session when runtime state is unknown.

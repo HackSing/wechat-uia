@@ -57,6 +57,7 @@ python scripts/run_wechat_skill.py export-history --target "文件传输助手" 
   - `get-chat-history`
   - `export-history`
   - `desktop-export`
+  - `daily-report-fetch` — batch-fetch today's messages for a configured customer list (reads `config/customers.yaml`)
 - Group management:
   - `get-group-members`
   - `set-group-nickname`

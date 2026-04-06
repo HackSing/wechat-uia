@@ -2,3 +2,9 @@ __pycache__/
 *.pyc
 output/
 *.log
+
+# daily-report-fetch runtime state
+.cache/
+skills/*/config/customers.yaml
+skills/*/config/customers.yml
+skills/*/config/customers.json

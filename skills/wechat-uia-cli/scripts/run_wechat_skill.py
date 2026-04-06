@@ -5,6 +5,7 @@ import importlib
 import json
 import os
 import sys
+from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 
@@ -374,6 +375,163 @@ def _cmd_desktop_export(args: argparse.Namespace) -> int:
     return desktop_export(args)
 
 
+def _cmd_daily_report_fetch(args: argparse.Namespace) -> int:
+    """Fetch today's chat messages for a configured list of customers."""
+    _ensure_vendor_path()
+    from wx4py.pages.daily_report import (
+        DailyReportFetcher,
+        filter_customers,
+        load_cache,
+        load_customers_config,
+        logs_to_json,
+        save_cache,
+    )
+
+    action = "daily_report_fetch"
+    config_path = Path(args.config).resolve()
+
+    # Phase 1: load + validate config (fail fast before opening WeChat)
+    try:
+        customers, meta = load_customers_config(config_path)
+    except Exception as exc:
+        return _emit(
+            {
+                "ok": False,
+                "action": action,
+                "error_type": type(exc).__name__,
+                "error": str(exc),
+                "config": str(config_path),
+            }
+        )
+
+    # Phase 2: filter by --customer / --group / --tag
+    try:
+        selected = filter_customers(
+            customers,
+            meta,
+            ids=args.customer or None,
+            group=args.group,
+            tags=args.tag or None,
+        )
+    except Exception as exc:
+        return _emit(
+            {
+                "ok": False,
+                "action": action,
+                "error_type": type(exc).__name__,
+                "error": str(exc),
+                "config": str(config_path),
+            }
+        )
+
+    # Phase 3: resolve defaults from config + CLI overrides
+    defaults = meta.get("defaults") or {}
+    since = args.since or str(defaults.get("since") or "today")
+    max_count = args.max_count if args.max_count is not None else int(defaults.get("max_count") or 300)
+
+    today = date.today()
+    cache_dir = Path(args.cache_dir).resolve() if args.cache_dir else (SKILL_DIR / ".cache" / "daily-report")
+    cached = load_cache(cache_dir, today) if not args.no_cache else {}
+
+    request_args = {
+        "config": str(config_path),
+        "since": since,
+        "max_count": max_count,
+        "group": args.group,
+        "tag": list(args.tag) if args.tag else None,
+        "customer": list(args.customer) if args.customer else None,
+        "cache_dir": str(cache_dir),
+        "no_cache": bool(args.no_cache),
+        "stop_on_error": bool(args.stop_on_error),
+        "skip_empty": bool(args.skip_empty),
+    }
+
+    if not selected:
+        return _emit(
+            {
+                "ok": True,
+                "action": action,
+                "args": request_args,
+                "result": {
+                    "report_date": today.isoformat(),
+                    "generated_at": datetime.now().isoformat(timespec="seconds"),
+                    "customer_count": 0,
+                    "success_count": 0,
+                    "empty_count": 0,
+                    "failure_count": 0,
+                    "from_cache": False,
+                    "cache_file": None,
+                    "customers": [],
+                    "message": "no customers matched the given filters",
+                },
+            }
+        )
+
+    # Phase 4: run fetch under a WeChatClient session
+    WeChatClient = _load_client_class()
+    try:
+        with WeChatClient() as client:
+            fetcher = DailyReportFetcher(client)
+            logs = fetcher.fetch_all(
+                selected,
+                since=since,
+                max_count=max_count,
+                stop_on_error=args.stop_on_error,
+                cache=cached,
+                use_cache=not args.no_cache,
+            )
+    except Exception as exc:
+        return _emit(
+            {
+                "ok": False,
+                "action": action,
+                "args": request_args,
+                "error_type": type(exc).__name__,
+                "error": str(exc),
+            }
+        )
+
+    # Phase 5: persist cache (merge with pre-existing day cache)
+    cache_file_str: str | None = None
+    try:
+        cache_file = save_cache(cache_dir, today, logs, existing=cached)
+        cache_file_str = str(cache_file)
+    except Exception as exc:
+        print(
+            f"warning: failed to save daily-report cache: {type(exc).__name__}: {exc}",
+            file=sys.stderr,
+        )
+
+    # Phase 6: summarize + emit
+    success_count = sum(1 for log in logs if log.status == "ok")
+    empty_count = sum(1 for log in logs if log.status == "empty")
+    failure_count = sum(1 for log in logs if log.status in ("not_found", "error"))
+    from_cache_all = bool(logs) and all(log.from_cache for log in logs)
+
+    output_logs = logs
+    if args.skip_empty:
+        output_logs = [log for log in logs if log.status != "empty"]
+
+    return _emit(
+        {
+            "ok": True,
+            "action": action,
+            "args": request_args,
+            "result": {
+                "report_date": today.isoformat(),
+                "generated_at": datetime.now().isoformat(timespec="seconds"),
+                "customer_count": len(logs),
+                "success_count": success_count,
+                "empty_count": empty_count,
+                "failure_count": failure_count,
+                "from_cache": from_cache_all,
+                "cache_file": cache_file_str,
+                "customers": logs_to_json(output_logs),
+            },
+        }
+    )
+
+
 def _cmd_run_workflow(args: argparse.Namespace) -> int:
     workflow_path = Path(args.workflow).resolve()
     workflow = json.loads(workflow_path.read_text(encoding="utf-8"))
@@ -505,6 +663,59 @@ def build_parser() -> argparse.ArgumentParser:
     workflow_parser = subparsers.add_parser("run-workflow", help="Run a JSON workflow using the unified wrapper actions")
     workflow_parser.add_argument("--workflow", required=True)
 
+    daily_report_parser = subparsers.add_parser(
+        "daily-report-fetch",
+        help="Batch-fetch daily chat messages for a configured list of customers",
+    )
+    daily_report_parser.add_argument(
+        "--config",
+        required=True,
+        help="Path to customers.yaml or customers.json",
+    )
+    daily_report_parser.add_argument(
+        "--since",
+        choices=["today", "yesterday", "week", "all"],
+        help="Override defaults.since from the config (default: today)",
+    )
+    daily_report_parser.add_argument(
+        "--max-count",
+        type=int,
+        help="Override defaults.max_count from the config (default: 300)",
+    )
+    daily_report_parser.add_argument(
+        "--group",
+        help="Filter by a named group declared under config.groups",
+    )
+    daily_report_parser.add_argument(
+        "--tag",
+        action="append",
+        help="Filter by tag (may be repeated to match any of several tags)",
+    )
+    daily_report_parser.add_argument(
+        "--customer",
+        action="append",
+        help="Fetch only the given customer id (may be repeated); overrides --group/--tag",
+    )
+    daily_report_parser.add_argument(
+        "--cache-dir",
+        help="Override cache directory (default: <skill>/.cache/daily-report)",
+    )
+    daily_report_parser.add_argument(
+        "--no-cache",
+        action="store_true",
+        help="Ignore any existing day cache and re-fetch every customer",
+    )
+    daily_report_parser.add_argument(
+        "--stop-on-error",
+        action="store_true",
+        help="Abort the batch on the first customer that ends in 'error' status",
+    )
+    daily_report_parser.add_argument(
+        "--skip-empty",
+        action="store_true",
+        help="Omit customers whose status is 'empty' from the output JSON",
+    )
+
     return parser
 
 
@@ -536,6 +747,8 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_desktop_export(args)
     if args.command == "run-workflow":
         return _cmd_run_workflow(args)
+    if args.command == "daily-report-fetch":
+        return _cmd_daily_report_fetch(args)
     return _cmd_with_client(args)
 
 

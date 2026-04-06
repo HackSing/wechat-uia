@@ -1,0 +1,59 @@
+# Customers configuration for the `daily-report-fetch` command.
+#
+# Copy this file to `customers.yaml` in the same directory (or anywhere else
+# and pass its path via --config) and edit the entries to match your actual
+# WeChat contact list.
+#
+# The fetcher will, for each selected customer, attempt to open the chat
+# using `target` first and then each name in `aliases` until one succeeds.
+# This is the only way to handle WeChat display-name / remark-name drift
+# without reading the account's backend data.
+
+version: 1
+
+# Optional global defaults. Per-customer fields override these.
+defaults:
+  target_type: contact        # 'contact' or 'group'
+  since: today                # 'today' | 'yesterday' | 'week' | 'all'
+  max_count: 300              # hard cap on messages per customer
+
+customers:
+  # Minimal example — only required fields.
+  - id: acme
+    display_name: 张伟
+    target: 张伟-Acme采购
+
+  # Full example — every supported field.
+  - id: betaco
+    display_name: 李娜
+    company: BetaCo
+    target: 李娜-BetaCo            # primary search keyword (usually the WeChat 备注名)
+    aliases:                       # fallback search keywords if `target` fails
+      - 李娜Beta
+      - BetaCo李总
+    target_type: contact           # override defaults.target_type
+    tags:                          # used by --tag / --group filtering
+      - 战略客户
+      - 华东大区
+    priority: high                 # high / medium / low — passed through to AI
+    notes: 季度 KPI 客户，重点跟进    # free-form context hint for the AI
+    max_count: 500                 # override defaults.max_count
+    # since: week                  # override defaults.since (uncommon)
+
+  # A group chat as a "customer" — sender info is still unavailable.
+  - id: gamma_project
+    display_name: Gamma 项目群
+    target: Gamma-项目沟通群
+    target_type: group
+    tags:
+      - 战略客户
+
+# Optional named groups. Each group name maps to a list of customer ids.
+# Invoke with `--group 战略客户` to fetch only those customers.
+# If you prefer tag-based filtering you can omit this section entirely.
+groups:
+  战略客户:
+    - acme
+    - gamma_project
+  意向客户:
+    - betaco

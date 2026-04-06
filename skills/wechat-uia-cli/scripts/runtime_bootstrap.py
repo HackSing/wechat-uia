@@ -20,6 +20,7 @@ DEPENDENCIES = [
     {"import_name": "markdown", "package_name": "markdown"},
     {"import_name": "bs4", "package_name": "beautifulsoup4"},
     {"import_name": "PIL", "package_name": "Pillow"},
+    {"import_name": "yaml", "package_name": "pyyaml"},
 ]
 
 

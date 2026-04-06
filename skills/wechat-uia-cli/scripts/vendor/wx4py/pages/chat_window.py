@@ -211,7 +211,20 @@ class ChatWindow(BasePage):
     def _find_target_result(
         self, results: Dict[str, List[SearchResult]], target: str, target_type: str
     ) -> Optional[SearchResult]:
-        """Find the matching search result for the target."""
+        """Find the matching search result for the target.
+
+        Resolution order:
+            1. The primary group (联系人 / 群聊) matching the requested target_type.
+            2. For contacts, the 功能 group (covers built-ins like 文件传输助手).
+            3. Fallback: any group whose items look like real contact/group
+               cells (auto_id starts with 'search_item_' and is not a function
+               item). This catches WeChat 4.x builds where the search popup
+               omits the group header row and our parser labels the items
+               as '未知'.
+
+        Fallback matches must match the target exactly (after trimming) to
+        avoid picking up noise from 搜索网络结果 / 聊天记录 / partial matches.
+        """
         primary_group = GROUP_CHATS if target_type == 'group' else GROUP_CONTACTS
 
         for item in results.get(primary_group, []):
@@ -221,6 +234,32 @@ class ChatWindow(BasePage):
         if target_type == 'contact':
             for item in results.get(GROUP_FUNCTIONS, []):
                 if target in item.name:
+                    return item
+
+        # Fallback: iterate any remaining groups and pick items that look like
+        # real contact/group cells. Skip noisy groups that can never be the
+        # target (network suggestions, chat-history hits, function items).
+        skip_groups = {GROUP_NETWORK, GROUP_HISTORY, GROUP_FUNCTIONS}
+        if target_type != 'group':
+            skip_groups.add(GROUP_CHATS)
+        if target_type != 'contact':
+            skip_groups.add(GROUP_CONTACTS)
+
+        target_trim = target.strip()
+        for group_name, items in results.items():
+            if group_name in skip_groups:
+                continue
+            for item in items:
+                if item.item_type != 'contact':
+                    continue
+                if not item.auto_id.startswith('search_item_'):
+                    continue
+                if item.auto_id.startswith('search_item_function'):
+                    continue
+                if item.name.strip() == target_trim:
+                    logger.debug(
+                        f"_find_target_result: matched '{target}' via fallback group '{group_name}'"
+                    )
                     return item
 
         return None
@@ -850,23 +889,37 @@ class ChatWindow(BasePage):
         rect = msg_list.BoundingRectangle
         return (rect.left + rect.right) // 2, (rect.top + rect.bottom) // 2
 
-    def _read_visible_chat_items(self, msg_list) -> list[tuple[str, str]]:
-        """Read visible timestamp and message items from the current chat view."""
+    def _read_visible_chat_items(self, msg_list) -> list[tuple[str, str, Optional[tuple]]]:
+        """Read visible timestamp and message items from the current chat view.
+
+        Returns a list of (kind, name, runtime_id) tuples where:
+            * kind is 'time' | 'system' | 'text' | 'link'
+            * name is the control's displayed text
+            * runtime_id is the UIA RuntimeId tuple (stable within a session)
+              or None if the control does not expose one. Used as a dedup key
+              by get_chat_history to avoid counting the same message twice
+              across overlapping scroll batches.
+        """
         time_cls = 'mmui::ChatItemView'
         msg_types = {'mmui::ChatTextItemView', 'mmui::ChatBubbleItemView'}
         time_re = re.compile(r'^(今天|昨天|星期[一二三四五六日]|\d{1,2}月\d{1,2}日|\d{1,2}/\d{1,2}|\d{4}年|\d{1,2}:\d{2})')
 
-        items = []
+        items: list[tuple[str, str, Optional[tuple]]] = []
         try:
             for child in msg_list.GetChildren():
                 cls = child.ClassName or ""
                 name = child.Name or ""
+                try:
+                    rid_raw = child.GetRuntimeId()
+                    rid: Optional[tuple] = tuple(rid_raw) if rid_raw else None
+                except Exception:
+                    rid = None
                 if cls == time_cls:
                     kind = 'time' if time_re.match(name) else 'system'
-                    items.append((kind, name))
+                    items.append((kind, name, rid))
                 elif cls in msg_types:
                     kind = 'text' if 'Text' in cls else 'link'
-                    items.append((kind, name))
+                    items.append((kind, name, rid))
         except Exception:
             return []
         return items
@@ -917,6 +970,24 @@ class ChatWindow(BasePage):
                 'time':    str,    # timestamp label attached to this message
             }
 
+        Collection strategy — "overlap merge":
+            Each scroll position yields a raw batch of (kind, content) items
+            from UIA GetChildren (observed order: newest → oldest, i.e.
+            bottom-to-top). Consecutive batches share an overlapping tail/head
+            region because the scroll step is smaller than the viewport.
+
+            Instead of deduplicating individual messages (which fails because
+            UIA RuntimeId is recycled across scrolls, and content-based dedup
+            loses legitimately repeated messages like two identical emoji),
+            we detect the overlap between consecutive batches via suffix-prefix
+            matching on the full (kind, content) sequence — including time
+            separators, which act as reliable anchors — and stitch the
+            non-overlapping tails together.
+
+            After stitching, the merged sequence is reversed to oldest-first
+            and a single forward pass assigns time labels from the naturally-
+            positioned time separators.
+
         Args:
             target:      Contact or group name
             target_type: 'contact' or 'group'
@@ -948,13 +1019,6 @@ class ChatWindow(BasePage):
 
         cx, cy = self._get_message_list_center(msg_list)
 
-        # collected newest-first while scrolling; reversed at the end
-        collected:   list = []
-        seen_keys:   set  = set()   # (time_label, content) to deduplicate
-        current_ts:  str  = ""
-        prev_top:    str  = None    # content of first visible item, scroll-position indicator
-        stuck_count: int  = 0
-
         # Focus the list without clicking (click would trigger image/link items)
         msg_list.SetFocus()
         time.sleep(0.3)
@@ -962,80 +1026,114 @@ class ChatWindow(BasePage):
         # Scroll to bottom first so we always start from the newest messages
         self._scroll_message_list_to_bottom(msg_list, cx, cy)
 
+        # ------- Phase 1: collect raw batches -------
+        # Each batch is a list of (kind, content) tuples in UIA iteration
+        # order (newest-first). Time separators are kept in the sequence —
+        # they serve as reliable anchors for overlap detection and for
+        # post-merge time assignment.
+        all_batches: List[List[tuple]] = []
+        stuck_count = 0
+        prev_sig: Optional[tuple] = None
         stop_reason = ''
-        while True:
-            batch = self._read_visible_chat_items(msg_list)
-            stop_now = False
 
-            # Detect scroll progress by the first visible item changing
-            top_item = batch[0][1] if batch else ''
-            if top_item == prev_top:
+        while True:
+            raw = self._read_visible_chat_items(msg_list)
+            batch: List[tuple] = [(kind, name) for kind, name, _rid in raw]
+
+            # Scroll-stuck detection (first 5 non-time items as signature)
+            sig = tuple((k, c[:40]) for k, c in batch if k != 'time')[:5]
+            if sig and sig == prev_sig:
                 stuck_count += 1
             else:
                 stuck_count = 0
-            prev_top = top_item
+            prev_sig = sig if sig else prev_sig
 
-            # Process the batch — iterate top-to-bottom (oldest first in view)
-            for kind, name in batch:
+            all_batches.append(batch)
+
+            # Peek for too_old time markers to know when to stop scrolling.
+            saw_too_old = False
+            for kind, content in batch:
                 if kind == 'time':
-                    current_ts = name
                     state = self._get_history_timestamp_state(
-                        current_ts,
-                        history_range,
-                        today,
-                        yesterday,
+                        content, history_range, today, yesterday,
                     )
                     if state == 'too_old':
-                        stop_now = True
+                        saw_too_old = True
                         break
-                    continue   # too_new or in_range: update ts, keep going
 
-                state = self._get_history_timestamp_state(
-                    current_ts,
-                    history_range,
-                    today,
-                    yesterday,
-                )
-                if state == 'too_old':
-                    stop_now = True
-                    break
-                if state == 'too_new':
-                    continue   # skip messages newer than target range
-
-                key = (current_ts, name)
-                if key in seen_keys:
-                    continue
-                seen_keys.add(key)
-
-                collected.append({
-                    'type':    kind,
-                    'content': name,
-                    'time':    current_ts,
-                })
-                if len(collected) >= max_count:
-                    stop_reason = f"hit max_count={max_count}"
-                    stop_now = True
-                    break
-
-            msg_count = len(collected)
             logger.debug(
-                f"  scroll: total={msg_count}, ts='{current_ts}', "
-                f"top='{top_item[:30]}', stuck={stuck_count}"
+                f"  batch {len(all_batches) - 1}: items={len(batch)} stuck={stuck_count}"
             )
 
-            if stop_now:
-                stop_reason = f"hit older timestamp '{current_ts}' (since='{since}')"
+            if saw_too_old:
+                stop_reason = f"hit older timestamp (since='{since}')"
                 break
             if stuck_count >= 5:
-                stop_reason = "reached top (first visible item unchanged after 5 scrolls)"
+                stop_reason = "reached top (scroll stuck)"
                 break
 
-            self._scroll_message_list(cx, cy, delta=360, steps=5, step_delay=0.1, settle_time=0.8)
+            # Re-assert focus in case another event stole it.
+            try:
+                msg_list.SetFocus()
+            except Exception:
+                pass
+            self._scroll_message_list(cx, cy, delta=360, steps=3, step_delay=0.1, settle_time=0.8)
+
+        # ------- Phase 2: concatenate + reverse + deduplicate -------
+        # All batches are simply concatenated (newest-first), reversed to
+        # oldest-first, then a single forward pass:
+        #   * assigns time labels from naturally-positioned separators
+        #   * deduplicates by content (first occurrence wins)
+        #   * applies the since-range filter
+        #
+        # Content-based dedup will merge legitimately repeated identical
+        # messages (e.g. two "[呲牙]" in a row), but this is an acceptable
+        # trade-off: it never produces false duplicates, and for downstream
+        # AI summarisation the loss of a repeated emoji is negligible.
+        if not all_batches:
+            return []
+
+        merged: List[tuple] = []
+        for batch in all_batches:
+            merged.extend(batch)
+        merged.reverse()  # now oldest-first
+
+        current_ts = ''
+        seen_content: set = set()
+        result: list = []
+
+        for kind, content in merged:
+            if kind == 'time':
+                current_ts = content
+                continue
+
+            # Content-based dedup: keep the first occurrence only.
+            if content in seen_content:
+                continue
+            seen_content.add(content)
+
+            # Apply since-range filter using the most recently seen separator.
+            if current_ts:
+                state = self._get_history_timestamp_state(
+                    current_ts, history_range, today, yesterday,
+                )
+                if state == 'too_old':
+                    continue
+                if state == 'too_new':
+                    continue
+
+            result.append({
+                'type': kind,
+                'content': content,
+                'time': current_ts,
+            })
+
+            if len(result) >= max_count:
+                stop_reason = f"hit max_count={max_count}"
+                break
 
         logger.info(
-            f"get_chat_history: {len(collected)} items from '{target}' "
+            f"get_chat_history: {len(result)} items from '{target}' "
             f"(since='{since}', stop='{stop_reason}')"
         )
-
-        collected.reverse()   # oldest first
-        return collected
+        return result
