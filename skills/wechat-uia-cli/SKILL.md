@@ -1,6 +1,6 @@
 ---
 name: wechat-uia-cli
-description: Self-contained Windows WeChat 4.x automation skill backed by vendored wx4py and wechat-rpa runtime code. Use when Codex needs to search contacts or groups, open chats, send messages or files, batch send, export or analyze chat history, run the desktop export dialog flow, inspect UIA state, manage groups, or troubleshoot WeChat UI automation on this machine.
+description: Self-contained Windows WeChat 4.x automation skill backed by vendored wx4py and wechat-rpa runtime code. Use when Codex needs to search contacts or groups, open chats, send messages or files, batch send, export or analyze chat history, inspect UIA state, manage groups, or troubleshoot WeChat UI automation on this machine.
 ---
 
 # Wechat Uia Cli
@@ -56,7 +56,6 @@ python scripts/run_wechat_skill.py export-history --target "文件传输助手" 
 - History:
   - `get-chat-history`
   - `export-history`
-  - `desktop-export`
   - `daily-report-fetch` — batch-fetch today's messages for a configured customer list (reads `config/customers.yaml`)
 - Group management:
   - `get-group-members`

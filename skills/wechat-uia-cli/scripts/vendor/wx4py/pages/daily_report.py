@@ -48,6 +48,9 @@ class CustomerConfig:
     priority: str = "medium"
     company: Optional[str] = None
     notes: Optional[str] = None
+    owner: Optional[str] = None
+    chip_focus: list[str] = field(default_factory=list)
+    project_hints: list[str] = field(default_factory=list)
     max_count: Optional[int] = None
     since: Optional[str] = None
 
@@ -162,6 +165,16 @@ def load_customers_config(config_path: Path) -> tuple[list[CustomerConfig], dict
             raise ValueError(f"customers[{cust_id}].tags must be a list")
         tags = [str(t).strip() for t in tags_raw if str(t).strip()]
 
+        chip_focus_raw = item.get("chip_focus") or []
+        if not isinstance(chip_focus_raw, list):
+            raise ValueError(f"customers[{cust_id}].chip_focus must be a list")
+        chip_focus = [str(t).strip() for t in chip_focus_raw if str(t).strip()]
+
+        project_hints_raw = item.get("project_hints") or []
+        if not isinstance(project_hints_raw, list):
+            raise ValueError(f"customers[{cust_id}].project_hints must be a list")
+        project_hints = [str(t).strip() for t in project_hints_raw if str(t).strip()]
+
         target_type = str(item.get("target_type") or defaults.get("target_type") or "contact")
         if target_type not in ("contact", "group"):
             raise ValueError(f"customers[{cust_id}].target_type must be 'contact' or 'group'")
@@ -189,6 +202,9 @@ def load_customers_config(config_path: Path) -> tuple[list[CustomerConfig], dict
                 priority=str(item.get("priority") or "medium"),
                 company=item.get("company") if isinstance(item.get("company"), str) else None,
                 notes=item.get("notes") if isinstance(item.get("notes"), str) else None,
+                owner=item.get("owner") if isinstance(item.get("owner"), str) else None,
+                chip_focus=chip_focus,
+                project_hints=project_hints,
                 max_count=max_count_val,
                 since=since_val,
             )

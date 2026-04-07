@@ -368,13 +368,6 @@ def _cmd_export_history(args: argparse.Namespace) -> int:
     return export_history(args)
 
 
-def _cmd_desktop_export(args: argparse.Namespace) -> int:
-    _ensure_vendor_path()
-    from wechat_rpa.cli import _cmd_desktop_export as desktop_export
-
-    return desktop_export(args)
-
-
 def _cmd_daily_report_fetch(args: argparse.Namespace) -> int:
     """Fetch today's chat messages for a configured list of customers."""
     _ensure_vendor_path()
@@ -532,6 +525,210 @@ def _cmd_daily_report_fetch(args: argparse.Namespace) -> int:
     )
 
 
+def _cmd_customer_followup(args: argparse.Namespace) -> int:
+    """Fetch customer chats, persist daily archives, and generate follow-up reports."""
+    _ensure_vendor_path()
+    from customer_followup import (
+        persist_customer_followup,
+        write_daily_index,
+        write_weekly_index,
+    )
+    from wx4py.pages.daily_report import (
+        DailyReportFetcher,
+        filter_customers,
+        load_cache,
+        load_customers_config,
+        save_cache,
+    )
+
+    action = "customer_followup"
+    config_path = Path(args.config).resolve()
+
+    try:
+        customers, meta = load_customers_config(config_path)
+    except Exception as exc:
+        return _emit(
+            {
+                "ok": False,
+                "action": action,
+                "error_type": type(exc).__name__,
+                "error": str(exc),
+                "config": str(config_path),
+            }
+        )
+
+    try:
+        selected = filter_customers(
+            customers,
+            meta,
+            ids=args.customer or None,
+            group=args.group,
+            tags=args.tag or None,
+        )
+    except Exception as exc:
+        return _emit(
+            {
+                "ok": False,
+                "action": action,
+                "error_type": type(exc).__name__,
+                "error": str(exc),
+                "config": str(config_path),
+            }
+        )
+
+    defaults = meta.get("defaults") or {}
+    since = args.since or str(defaults.get("since") or "today")
+    max_count = args.max_count if args.max_count is not None else int(defaults.get("max_count") or 300)
+    history_days = max(1, int(args.history_days))
+
+    today = date.today()
+    cache_dir = Path(args.cache_dir).resolve() if args.cache_dir else (SKILL_DIR / ".cache" / "daily-report")
+    output_root = Path(args.output_root).resolve() if args.output_root else (Path.cwd() / "output" / "customer-followup")
+    cached = load_cache(cache_dir, today) if not args.no_cache else {}
+
+    request_args = {
+        "config": str(config_path),
+        "since": since,
+        "max_count": max_count,
+        "group": args.group,
+        "tag": list(args.tag) if args.tag else None,
+        "customer": list(args.customer) if args.customer else None,
+        "cache_dir": str(cache_dir),
+        "output_root": str(output_root),
+        "history_days": history_days,
+        "knowledge_dir": str(Path(args.knowledge_dir).resolve()) if args.knowledge_dir else None,
+        "no_cache": bool(args.no_cache),
+        "stop_on_error": bool(args.stop_on_error),
+        "skip_empty": bool(args.skip_empty),
+    }
+
+    if not selected:
+        return _emit(
+            {
+                "ok": True,
+                "action": action,
+                "args": request_args,
+                "result": {
+                    "report_date": today.isoformat(),
+                    "generated_at": datetime.now().isoformat(timespec="seconds"),
+                    "customer_count": 0,
+                    "success_count": 0,
+                    "empty_count": 0,
+                    "failure_count": 0,
+                    "from_cache": False,
+                    "cache_file": None,
+                    "output_root": str(output_root),
+                    "index_file": None,
+                    "batch_file": None,
+                    "customers": [],
+                    "message": "no customers matched the given filters",
+                },
+            }
+        )
+
+    WeChatClient = _load_client_class()
+    try:
+        with WeChatClient() as client:
+            fetcher = DailyReportFetcher(client)
+            logs = fetcher.fetch_all(
+                selected,
+                since=since,
+                max_count=max_count,
+                stop_on_error=args.stop_on_error,
+                cache=cached,
+                use_cache=not args.no_cache,
+            )
+    except Exception as exc:
+        return _emit(
+            {
+                "ok": False,
+                "action": action,
+                "args": request_args,
+                "error_type": type(exc).__name__,
+                "error": str(exc),
+            }
+        )
+
+    cache_file_str: str | None = None
+    try:
+        cache_file = save_cache(cache_dir, today, logs, existing=cached)
+        cache_file_str = str(cache_file)
+    except Exception as exc:
+        print(
+            f"warning: failed to save daily-report cache: {type(exc).__name__}: {exc}",
+            file=sys.stderr,
+        )
+
+    selected_by_id = {customer.id: customer for customer in selected}
+    customer_outputs: list[dict[str, Any]] = []
+    for log in logs:
+        customer = selected_by_id.get(log.id)
+        if not customer:
+            continue
+        item = persist_customer_followup(
+            output_root,
+            today,
+            customer,
+            log,
+            history_days=history_days,
+            knowledge_dir=args.knowledge_dir,
+        )
+        item["from_cache"] = bool(log.from_cache)
+        customer_outputs.append(item)
+
+    index_info = write_daily_index(
+        output_root,
+        today,
+        customer_outputs,
+        source_config=str(config_path),
+        request_args=request_args,
+    )
+    weekly_index_info = write_weekly_index(
+        output_root,
+        today,
+        customer_outputs,
+        source_config=str(config_path),
+        request_args=request_args,
+    )
+
+    success_count = sum(1 for log in logs if log.status == "ok")
+    empty_count = sum(1 for log in logs if log.status == "empty")
+    failure_count = sum(1 for log in logs if log.status in ("not_found", "error"))
+    from_cache_all = bool(logs) and all(log.from_cache for log in logs)
+
+    response_outputs = customer_outputs
+    if args.skip_empty:
+        response_outputs = [
+            item
+            for item in customer_outputs
+            if item["status"] != "empty"
+        ]
+
+    return _emit(
+        {
+            "ok": True,
+            "action": action,
+            "args": request_args,
+            "result": {
+                "report_date": today.isoformat(),
+                "generated_at": datetime.now().isoformat(timespec="seconds"),
+                "customer_count": len(logs),
+                "success_count": success_count,
+                "empty_count": empty_count,
+                "failure_count": failure_count,
+                "from_cache": from_cache_all,
+                "cache_file": cache_file_str,
+                "output_root": str(output_root),
+                "index_file": index_info["index_file"],
+                "batch_file": index_info["batch_file"],
+                "weekly_index_file": weekly_index_info["index_file"],
+                "weekly_batch_file": weekly_index_info["batch_file"],
+                "customers": response_outputs,
+            },
+        }
+    )
+
+
 def _cmd_run_workflow(args: argparse.Namespace) -> int:
     workflow_path = Path(args.workflow).resolve()
     workflow = json.loads(workflow_path.read_text(encoding="utf-8"))
@@ -626,13 +823,6 @@ def build_parser() -> argparse.ArgumentParser:
     export_parser.add_argument("--json-only", action="store_true")
     export_parser.add_argument("--summary-only", action="store_true")
 
-    desktop_export_parser = subparsers.add_parser("desktop-export", help="Drive the export-chat-history desktop dialog")
-    desktop_export_parser.add_argument("--targets", nargs="+", required=True)
-    desktop_export_parser.add_argument("--time-range-label", default="三个月内")
-    desktop_export_parser.add_argument("--content-scope-label", default="部分聊天记录")
-    desktop_export_parser.add_argument("--max-scrolls", type=int, default=25)
-    desktop_export_parser.add_argument("--step-delay", type=float, default=0.8)
-
     group_members_parser = subparsers.add_parser("get-group-members", help="List group members")
     group_members_parser.add_argument("--group", required=True)
 
@@ -716,6 +906,73 @@ def build_parser() -> argparse.ArgumentParser:
         help="Omit customers whose status is 'empty' from the output JSON",
     )
 
+    customer_followup_parser = subparsers.add_parser(
+        "customer-followup",
+        help="Fetch daily customer chats, archive them by day, and generate follow-up reports",
+    )
+    customer_followup_parser.add_argument(
+        "--config",
+        required=True,
+        help="Path to customers.yaml or customers.json",
+    )
+    customer_followup_parser.add_argument(
+        "--since",
+        choices=["today", "yesterday", "week", "all"],
+        help="Override defaults.since from the config (recommended: today)",
+    )
+    customer_followup_parser.add_argument(
+        "--max-count",
+        type=int,
+        help="Override defaults.max_count from the config",
+    )
+    customer_followup_parser.add_argument(
+        "--group",
+        help="Filter by a named group declared under config.groups",
+    )
+    customer_followup_parser.add_argument(
+        "--tag",
+        action="append",
+        help="Filter by tag (may be repeated to match any of several tags)",
+    )
+    customer_followup_parser.add_argument(
+        "--customer",
+        action="append",
+        help="Process only the given customer id (may be repeated); overrides --group/--tag",
+    )
+    customer_followup_parser.add_argument(
+        "--cache-dir",
+        help="Override cache directory (default: <skill>/.cache/daily-report)",
+    )
+    customer_followup_parser.add_argument(
+        "--output-root",
+        help="Root directory for archives and reports (default: <repo>/output/customer-followup)",
+    )
+    customer_followup_parser.add_argument(
+        "--history-days",
+        type=int,
+        default=14,
+        help="How many previous days to include as report context (default: 14)",
+    )
+    customer_followup_parser.add_argument(
+        "--knowledge-dir",
+        help="Optional directory containing chip_catalog.json and project_cases.json; falls back to bundled virtual knowledge",
+    )
+    customer_followup_parser.add_argument(
+        "--no-cache",
+        action="store_true",
+        help="Ignore any existing day cache and re-fetch every customer",
+    )
+    customer_followup_parser.add_argument(
+        "--stop-on-error",
+        action="store_true",
+        help="Abort the batch on the first customer that ends in 'error' status",
+    )
+    customer_followup_parser.add_argument(
+        "--skip-empty",
+        action="store_true",
+        help="Omit empty customers from the command JSON output (archives are still refreshed)",
+    )
+
     return parser
 
 
@@ -743,12 +1000,12 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_check_env()
     if args.command == "export-history":
         return _cmd_export_history(args)
-    if args.command == "desktop-export":
-        return _cmd_desktop_export(args)
     if args.command == "run-workflow":
         return _cmd_run_workflow(args)
     if args.command == "daily-report-fetch":
         return _cmd_daily_report_fetch(args)
+    if args.command == "customer-followup":
+        return _cmd_customer_followup(args)
     return _cmd_with_client(args)
 
 

@@ -86,12 +86,6 @@ python scripts/run_wechat_skill.py modify-announcement --group "项目群" --con
 python scripts/run_wechat_skill.py set-announcement-from-markdown --group "项目群" --markdown-file "C:\temp\announcement.md"
 ```
 
-Desktop export dialog automation:
-
-```bash
-python scripts/run_wechat_skill.py desktop-export --targets "项目群" "文件传输助手" --time-range-label "三个月内" --content-scope-label "部分聊天记录"
-```
-
 Daily report batch fetch (for a configured customer list):
 
 ```bash
@@ -140,6 +134,86 @@ python scripts/run_wechat_skill.py daily-report-fetch --config config/customers.
 ```
 
 Each customer entry sets `status` to one of `ok` / `empty` / `not_found` / `error`. Per-customer failures do NOT set the top-level `ok` to `false`; the batch only fails on client-level errors (e.g., WeChat not running) or config parse errors. The `messages` array is passed through unchanged from `get-chat-history`, so sender information is still unavailable (an upstream AI layer is expected to infer sender from context). Template config lives at `config/customers.yaml.example`.
+
+Customer follow-up pipeline:
+
+```bash
+python scripts/run_wechat_skill.py customer-followup --config config/customers.yaml --since today
+python scripts/run_wechat_skill.py customer-followup --config config/customers.yaml --group 战略客户
+python scripts/run_wechat_skill.py customer-followup --config config/customers.yaml --customer acme --output-root .\output\customer-followup
+python scripts/run_wechat_skill.py customer-followup --config config/customers.yaml --knowledge-dir .\knowledge\real
+```
+
+`customer-followup` output shape:
+
+```json
+{
+  "ok": true,
+  "action": "customer_followup",
+  "args": {
+    "config": "...",
+    "since": "today",
+    "max_count": 300,
+    "group": null,
+    "tag": null,
+    "customer": null,
+    "cache_dir": "...",
+    "output_root": "...",
+    "history_days": 14,
+    "knowledge_dir": null,
+    "no_cache": false,
+    "stop_on_error": false,
+    "skip_empty": false
+  },
+  "result": {
+    "report_date": "2026-04-07",
+    "generated_at": "2026-04-07T19:12:00",
+    "customer_count": 2,
+    "success_count": 2,
+    "empty_count": 0,
+    "failure_count": 0,
+    "from_cache": false,
+    "cache_file": "<skill>/.cache/daily-report/2026-04-07.json",
+    "output_root": "<repo>/output/customer-followup",
+    "index_file": "<repo>/output/customer-followup/reports/2026-04-07/index.md",
+    "batch_file": "<repo>/output/customer-followup/reports/2026-04-07/batch.json",
+    "weekly_index_file": "<repo>/output/customer-followup/reports/weekly/2026-04-07/index.md",
+    "weekly_batch_file": "<repo>/output/customer-followup/reports/weekly/2026-04-07/batch.json",
+    "customers": [
+      {
+        "id": "acme",
+        "display_name": "张伟",
+        "status": "ok",
+        "message_count": 12,
+        "stage": "需求沟通",
+        "priority": "medium",
+        "knowledge_virtual": true,
+        "timeline_file": "<repo>/output/customer-followup/customers/acme/timeline.md",
+        "daily_file": "<repo>/output/customer-followup/customers/acme/daily/2026-04-07.json",
+        "report_file": "<repo>/output/customer-followup/reports/2026-04-07/acme.md",
+        "report_json_file": "<repo>/output/customer-followup/reports/2026-04-07/acme.json",
+        "projects_overview_file": "<repo>/output/customer-followup/customers/acme/projects/overview.md",
+        "projects_overview_json_file": "<repo>/output/customer-followup/customers/acme/projects/overview.json",
+        "issues_file": "<repo>/output/customer-followup/customers/acme/issues/current.json",
+        "issues_history_file": "<repo>/output/customer-followup/customers/acme/issues/history/2026-04-07.json",
+        "weekly_report_file": "<repo>/output/customer-followup/reports/weekly/2026-04-07/acme.md",
+        "weekly_report_json_file": "<repo>/output/customer-followup/reports/weekly/2026-04-07/acme.json",
+        "from_cache": false
+      }
+    ]
+  }
+}
+```
+
+The workflow is intended for daily customer tracking. It archives each day separately, rebuilds one timeline document per customer, refreshes project and issue views, and emits both daily and weekly follow-up reports.
+
+The daily JSON payload stored under `customers/<id>/daily/YYYY-MM-DD.json` also carries:
+
+- the raw `log`
+- `history` summary over recent days
+- `analysis.digest` / `analysis.projects` / `analysis.issues`
+- `analysis.selection_review` / `analysis.similar_cases`
+- `analysis.execution_split`, which explicitly separates what the code already did from what an upstream LLM should keep doing
 
 ## Notes
 

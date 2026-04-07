@@ -1,0 +1,90 @@
+{
+  "virtual": true,
+  "description": "Bundled placeholder chip catalog used to demonstrate rule-based evaluation. Replace with chip_catalog.json from the customer when real product data is available.",
+  "chips": [
+    {
+      "model": "LOB-W1",
+      "aliases": ["lobster-w1", "W1"],
+      "family": "Lobster Wireless",
+      "capabilities": {
+        "wifi": true,
+        "ble": true,
+        "audio_capture": true,
+        "audio_playback": true,
+        "camera": false,
+        "video_encode": false,
+        "video_decode": false,
+        "display": false,
+        "ai": false,
+        "ethernet": false,
+        "low_power": true
+      },
+      "fit_scenarios": ["audio_terminal", "networked_device"],
+      "not_fit_scenarios": ["wifi_audio_video", "video_device"],
+      "notes": "适合低功耗语音/音频终端，不适合作为视频主控。"
+    },
+    {
+      "model": "LOB-V5",
+      "aliases": ["lobster-v5", "V5"],
+      "family": "Lobster Vision",
+      "capabilities": {
+        "wifi": true,
+        "ble": false,
+        "audio_capture": true,
+        "audio_playback": true,
+        "camera": true,
+        "video_encode": true,
+        "video_decode": true,
+        "display": true,
+        "ai": false,
+        "ethernet": true,
+        "low_power": false
+      },
+      "fit_scenarios": ["wifi_audio_video", "video_device"],
+      "not_fit_scenarios": [],
+      "notes": "偏视频主控，适合带摄像头的联网设备。"
+    },
+    {
+      "model": "LOB-AI8",
+      "aliases": ["lobster-ai8", "AI8"],
+      "family": "Lobster EdgeAI",
+      "capabilities": {
+        "wifi": true,
+        "ble": false,
+        "audio_capture": true,
+        "audio_playback": true,
+        "camera": true,
+        "video_encode": true,
+        "video_decode": false,
+        "display": true,
+        "ai": true,
+        "ethernet": true,
+        "low_power": false
+      },
+      "fit_scenarios": ["edge_ai", "video_device", "wifi_audio_video"],
+      "not_fit_scenarios": [],
+      "notes": "适合带视觉推理的音视频场景。"
+    },
+    {
+      "model": "LOB-LP2",
+      "aliases": ["lobster-lp2", "LP2"],
+      "family": "Lobster LowPower",
+      "capabilities": {
+        "wifi": false,
+        "ble": true,
+        "audio_capture": false,
+        "audio_playback": false,
+        "camera": false,
+        "video_encode": false,
+        "video_decode": false,
+        "display": false,
+        "ai": false,
+        "ethernet": false,
+        "low_power": true
+      },
+      "fit_scenarios": ["networked_device"],
+      "not_fit_scenarios": ["audio_terminal", "wifi_audio_video", "video_device", "edge_ai"],
+      "notes": "适合简单低功耗连接节点，不适合音视频需求。"
+    }
+  ]
+}

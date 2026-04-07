@@ -55,5 +55,5 @@ Use underscore action names inside workflows even when the top-level CLI command
 - `workflow.steps` must be a JSON array.
 - Each step must be a JSON object with an `action` field.
 - The runner stops on the first failed step.
-- `export-history` and `desktop-export` are top-level commands, not workflow steps.
+- `export-history` is a top-level command, not a workflow step.
 - Use absolute Windows paths for `file` and `markdown_file`.

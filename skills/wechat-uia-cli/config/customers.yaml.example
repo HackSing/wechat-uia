@@ -1,4 +1,4 @@
-# Customers configuration for the `daily-report-fetch` command.
+# Customers configuration for the `daily-report-fetch` and `customer-followup` commands.
 #
 # Copy this file to `customers.yaml` in the same directory (or anywhere else
 # and pass its path via --config) and edit the entries to match your actual
@@ -37,6 +37,13 @@ customers:
       - 华东大区
     priority: high                 # high / medium / low — passed through to AI
     notes: 季度 KPI 客户，重点跟进    # free-form context hint for the AI
+    owner: 华东销售-王磊             # optional owner / AM / FAE
+    chip_focus:                    # optional expected chip models or families
+      - LOB-V5
+      - LOB-AI8
+    project_hints:                 # optional project names or scenario hints
+      - BetaCo门铃项目
+      - WiFi音视频
     max_count: 500                 # override defaults.max_count
     # since: week                  # override defaults.since (uncommon)
 

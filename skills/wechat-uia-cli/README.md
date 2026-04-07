@@ -2,6 +2,11 @@
 
 这套 skill 用来在 Windows 上自动操作微信 4.x。
 
+目前建议把它理解成两类能力：
+
+- 单次聊天导出与分析
+- 面向销售/客户成功场景的每日客户跟进流水线
+
 它适合两类人：
 
 - 直接和 Agent 对话的人
@@ -101,13 +106,14 @@ python scripts/run_wechat_skill.py check-env
 - `messages.csv`
 - `summary.json`
 
-### 6. 使用微信桌面的“导出聊天记录”流程
+### 5.5 客户跟进与日报
 
-- 帮我走微信的导出聊天记录弹窗，把“项目同步群”导出来
-- 帮我在导出窗口里选择“文件传输助手”和“项目同步群”
-- 帮我把时间范围设成“三个月内”，内容范围设成“部分聊天记录”
+- 帮我按客户配置抓取今天的聊天记录并生成跟进报告
+- 帮我把今天的客户沟通沉淀到按天文档里
+- 帮我为战略客户生成今天的跟进总览
+- 帮我更新客户时间轴并输出今天的日报建议
 
-### 7. 群管理
+### 6. 群管理
 
 - 帮我获取“项目同步群”的成员列表
 - 帮我把我在“项目同步群”的群昵称改成“值班号”
@@ -116,12 +122,12 @@ python scripts/run_wechat_skill.py check-env
 - 帮我置顶“项目同步群”
 - 帮我取消置顶“项目同步群”
 
-### 8. 群公告
+### 7. 群公告
 
 - 帮我把“项目同步群”的公告改成：今晚 18:00 冻结代码
 - 帮我把 `C:\Temp\announcement.md` 的内容设置成“项目同步群”的公告
 
-### 9. 诊断和排查
+### 8. 诊断和排查
 
 - 帮我看看当前微信界面是不是已经在聊天窗口
 - 帮我抓一下当前微信窗口快照
@@ -177,6 +183,35 @@ python scripts/run_wechat_skill.py send-file-to --target "项目同步群" --tar
 python scripts/run_wechat_skill.py export-history --target "项目同步群" --target-type group --since week --max-count 100
 ```
 
+### 客户跟进日报
+
+```bash
+python scripts/run_wechat_skill.py customer-followup --config config/customers.yaml --since today
+```
+
+这条命令会在一次运行里完成：
+
+- 抓取客户当天聊天记录
+- 归档到按天保存的 JSON
+- 重建每个客户的 `timeline.md`
+- 刷新项目档案和 issue 列表
+- 生成当天日报、周报和总览页
+
+建议阅读顺序：
+
+- 先看 `reports/YYYY-MM-DD/index.md`
+- 再看单客户 `reports/YYYY-MM-DD/<customer-id>.md`
+- 再看 `customers/<customer-id>/projects/overview.md` 和 `issues/current.json`
+- 需要更长历史时再看 `customers/<customer-id>/timeline.md`
+
+如果要启用第二层“芯片选型/相似案例”增强能力，可以额外传：
+
+```bash
+python scripts/run_wechat_skill.py customer-followup --config config/customers.yaml --knowledge-dir .\knowledge\real
+```
+
+如果没有提供真实知识库，会自动回退到 skill 自带的虚拟资料。
+
 ### 获取群成员
 
 ```bash
@@ -196,6 +231,19 @@ python scripts/run_wechat_skill.py set-do-not-disturb --group "项目同步群" 
 - 聊天记录抓取通常拿不到发送者姓名，这是微信 UI 的限制
 - 群公告修改、群设置修改可能受权限影响
 - 批量操作前建议先在“文件传输助手”做一次小范围验证
+
+优化后的 UIA 方案虽然比之前稳定，但仍然不是数据库级精确读取。当前仍然存在：
+
+- 启发式分页，极端情况下仍可能重复或漏消息
+- `reached top (scroll stuck)` 只表示界面不再变化，不一定是绝对最早消息
+- 时间粒度是按可见时间分隔块，而不是每条消息精确时间
+- 富媒体消息会被简化
+
+完整说明见：
+
+- `docs/known-limitations.md`
+- `docs/customer-followup.md`
+- `docs/customer-followup-prd.md`
 
 ## 看到结果时怎么判断
 
@@ -217,5 +265,7 @@ python scripts/run_wechat_skill.py set-do-not-disturb --group "项目同步群" 
 - 帮我把这个 PDF 发到“项目同步群”，附言“请今晚前确认”
 - 帮我导出“项目同步群”本周聊天记录，先只试 20 条
 - 帮我读取“项目同步群”今天的聊天记录并总结一下重点
+- 帮我按客户配置生成今天的客户跟进报告和总览
+- 帮我更新 AIWare 和一辣的客户时间轴，再输出今天的日报
 - 帮我获取“项目同步群”的成员列表
 - 帮我把“项目同步群”的公告更新成这段内容

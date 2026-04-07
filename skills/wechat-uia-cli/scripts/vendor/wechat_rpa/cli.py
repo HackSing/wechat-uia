@@ -10,8 +10,6 @@ from collections import Counter
 from pathlib import Path
 from typing import Any
 
-from .desktop_export import DesktopExportFlow
-
 
 def _load_wechat_client():
     """Load WeChatClient from installed wx4py or local repo source."""
@@ -150,42 +148,6 @@ def _cmd_export_history(args: argparse.Namespace) -> int:
         )
 
 
-def _cmd_desktop_export(args: argparse.Namespace) -> int:
-    """Run the dedicated desktop export flow."""
-    try:
-        WeChatClient = _load_wechat_client()
-
-        with WeChatClient() as wx:
-            flow = DesktopExportFlow(wx)
-            result = flow.run(
-                targets=args.targets,
-                time_range_label=args.time_range_label,
-                content_scope_label=args.content_scope_label,
-                max_scrolls=args.max_scrolls,
-                step_delay=args.step_delay,
-            )
-
-        return _emit(
-            {
-                "ok": result["ok"],
-                "action": "desktop-export",
-                "targets": args.targets,
-                "time_range_label": args.time_range_label,
-                "content_scope_label": args.content_scope_label,
-                "steps": result["steps"],
-            }
-        )
-    except Exception as exc:
-        return _emit(
-            {
-                "ok": False,
-                "action": "desktop-export",
-                "error_type": type(exc).__name__,
-                "error": str(exc),
-            }
-        )
-
-
 def _build_parser() -> argparse.ArgumentParser:
     """Build CLI parser."""
     parser = argparse.ArgumentParser(prog="wechat-rpa", description="WeChat chat history export CLI")
@@ -201,13 +163,6 @@ def _build_parser() -> argparse.ArgumentParser:
     export_parser.add_argument("--json-only", action="store_true", help="Only write messages.json and summary.json")
     export_parser.add_argument("--summary-only", action="store_true", help="Only write summary.json")
 
-    desktop_export_parser = subparsers.add_parser("desktop-export", help="Run the dedicated WeChat desktop export flow")
-    desktop_export_parser.add_argument("--targets", nargs="+", required=True, help="Contact/group names to select in export dialog")
-    desktop_export_parser.add_argument("--time-range-label", default="三个月内", help="Visible option text for time range")
-    desktop_export_parser.add_argument("--content-scope-label", default="部分聊天记录", help="Visible option text for content scope")
-    desktop_export_parser.add_argument("--max-scrolls", type=int, default=25, help="Maximum scroll iterations while searching targets")
-    desktop_export_parser.add_argument("--step-delay", type=float, default=0.8, help="Delay between desktop flow actions")
-
     return parser
 
 
@@ -222,8 +177,6 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "export-history":
         return _cmd_export_history(args)
-    if args.command == "desktop-export":
-        return _cmd_desktop_export(args)
 
     return _emit(
         {

@@ -71,6 +71,16 @@ class ChatHistoryRange:
     too_new_prefixes: set[str]
 
 
+@dataclass(frozen=True)
+class VisibleChatItem:
+    """One visible history item read from the message list."""
+    kind: str
+    name: str
+    runtime_id: Optional[tuple]
+    top: int
+    bottom: int
+
+
 class ChatWindow(BasePage):
     """
     Chat window page for sending messages.
@@ -889,22 +899,152 @@ class ChatWindow(BasePage):
         rect = msg_list.BoundingRectangle
         return (rect.left + rect.right) // 2, (rect.top + rect.bottom) // 2
 
-    def _read_visible_chat_items(self, msg_list) -> list[tuple[str, str, Optional[tuple]]]:
+    def _get_control_vertical_bounds(self, ctrl) -> tuple[int, int]:
+        """Return a control's vertical bounds for scroll diagnostics."""
+        try:
+            rect = ctrl.BoundingRectangle
+            if not rect:
+                return (0, 0)
+            return (int(rect.top), int(rect.bottom))
+        except Exception:
+            return (0, 0)
+
+    @staticmethod
+    def _history_batch_signature(items: List[VisibleChatItem]) -> tuple:
+        """Build a scroll-progress signature from the first visible non-time items."""
+        signature = []
+        for item in items:
+            if item.kind == 'time':
+                continue
+            signature.append((item.kind, item.name[:40], item.top, item.bottom))
+            if len(signature) >= 5:
+                break
+        return tuple(signature)
+
+    @staticmethod
+    def _history_overlap_is_safe(segment: List[tuple[str, str]]) -> bool:
+        """Guard against tiny accidental overlaps on repeated short messages."""
+        if not segment:
+            return False
+        if len(segment) >= 3:
+            return True
+        if any(kind == 'time' for kind, _content in segment):
+            return True
+        non_time_count = sum(1 for kind, _content in segment if kind != 'time')
+        return len(segment) >= 2 and non_time_count >= 2
+
+    @staticmethod
+    def _can_skip_overlap_edge(items: List[tuple[str, str]]) -> bool:
+        """Only allow tolerant overlap skips for timestamp/system separators."""
+        return all(kind in {'time', 'system'} for kind, _content in items)
+
+    @staticmethod
+    def _find_history_overlap_alignment(
+        previous_batch: List[tuple[str, str]],
+        current_batch: List[tuple[str, str]],
+    ) -> Optional[tuple[int, int, int]]:
+        """Return (prev_skip, current_trim, overlap_len) for the best safe overlap.
+
+        `GetChildren()` is returned in visual top-to-bottom order for the chat
+        list, which means older visible items come first and newer items come
+        last. After we scroll upward, the new batch therefore contributes older
+        items at the *front* and overlaps with the *front* of the previous
+        batch.
+        """
+        if not previous_batch or not current_batch:
+            return None
+
+        best: Optional[tuple[int, int, int]] = None
+        max_prev_skip = min(2, len(previous_batch) - 1)
+        max_current_trim = min(2, len(current_batch) - 1)
+
+        for prev_skip in range(0, max_prev_skip + 1):
+            if prev_skip > 0 and not ChatWindow._can_skip_overlap_edge(previous_batch[:prev_skip]):
+                continue
+
+            prev_effective = previous_batch[prev_skip:] if prev_skip else previous_batch
+            if not prev_effective:
+                continue
+
+            for current_trim in range(0, max_current_trim + 1):
+                if current_trim > 0 and not ChatWindow._can_skip_overlap_edge(current_batch[-current_trim:]):
+                    continue
+
+                current_effective = current_batch[: len(current_batch) - current_trim] if current_trim else current_batch
+                if not current_effective:
+                    continue
+
+                max_overlap = min(len(prev_effective), len(current_effective), 80)
+                for overlap_len in range(max_overlap, 0, -1):
+                    prev_head = prev_effective[:overlap_len]
+                    curr_tail = current_effective[-overlap_len:]
+                    if prev_head != curr_tail:
+                        continue
+                    if not ChatWindow._history_overlap_is_safe(curr_tail):
+                        continue
+                    candidate = (prev_skip, current_trim, overlap_len)
+                    if best is None or overlap_len > best[2]:
+                        best = candidate
+                    break
+
+        return best
+
+    @staticmethod
+    def _find_history_overlap(previous_batch: List[tuple[str, str]], current_batch: List[tuple[str, str]]) -> int:
+        """Return the overlap length used by legacy tests and callers."""
+        alignment = ChatWindow._find_history_overlap_alignment(previous_batch, current_batch)
+        return alignment[2] if alignment else 0
+
+    def _merge_history_batches(self, batches: List[List[tuple[str, str]]]) -> List[tuple[str, str]]:
+        """Merge top-to-bottom batches by adjacent overlap, keeping true duplicates."""
+        if not batches:
+            return []
+
+        merged = list(batches[0])
+        for batch_index, batch in enumerate(batches[1:], start=1):
+            alignment = self._find_history_overlap_alignment(merged, batch)
+            if alignment:
+                prev_skip, current_trim, overlap_len = alignment
+                logger.debug(
+                    "  merge batch %s with overlap=%s prev_skip=%s current_trim=%s (prev=%s, curr=%s)",
+                    batch_index,
+                    overlap_len,
+                    prev_skip,
+                    current_trim,
+                    len(merged),
+                    len(batch),
+                )
+                if prev_skip > 0:
+                    merged = merged[prev_skip:]
+                if current_trim > 0:
+                    batch = batch[: len(batch) - current_trim]
+                merged = batch[: len(batch) - overlap_len] + merged
+            else:
+                logger.debug(
+                    "  merge batch %s without reliable overlap (prev=%s, curr=%s)",
+                    batch_index,
+                    len(merged),
+                    len(batch),
+                )
+                merged = list(batch) + merged
+        return merged
+
+    def _read_visible_chat_items(self, msg_list) -> List[VisibleChatItem]:
         """Read visible timestamp and message items from the current chat view.
 
-        Returns a list of (kind, name, runtime_id) tuples where:
+        Returns a list of VisibleChatItem objects where:
             * kind is 'time' | 'system' | 'text' | 'link'
             * name is the control's displayed text
             * runtime_id is the UIA RuntimeId tuple (stable within a session)
-              or None if the control does not expose one. Used as a dedup key
-              by get_chat_history to avoid counting the same message twice
-              across overlapping scroll batches.
+              or None if the control does not expose one
+            * top / bottom come from BoundingRectangle and are used only for
+              scroll-progress diagnostics, not as stable message identifiers
         """
         time_cls = 'mmui::ChatItemView'
         msg_types = {'mmui::ChatTextItemView', 'mmui::ChatBubbleItemView'}
         time_re = re.compile(r'^(今天|昨天|星期[一二三四五六日]|\d{1,2}月\d{1,2}日|\d{1,2}/\d{1,2}|\d{4}年|\d{1,2}:\d{2})')
 
-        items: list[tuple[str, str, Optional[tuple]]] = []
+        items: List[VisibleChatItem] = []
         try:
             for child in msg_list.GetChildren():
                 cls = child.ClassName or ""
@@ -914,12 +1054,13 @@ class ChatWindow(BasePage):
                     rid: Optional[tuple] = tuple(rid_raw) if rid_raw else None
                 except Exception:
                     rid = None
+                top, bottom = self._get_control_vertical_bounds(child)
                 if cls == time_cls:
                     kind = 'time' if time_re.match(name) else 'system'
-                    items.append((kind, name, rid))
+                    items.append(VisibleChatItem(kind=kind, name=name, runtime_id=rid, top=top, bottom=bottom))
                 elif cls in msg_types:
                     kind = 'text' if 'Text' in cls else 'link'
-                    items.append((kind, name, rid))
+                    items.append(VisibleChatItem(kind=kind, name=name, runtime_id=rid, top=top, bottom=bottom))
         except Exception:
             return []
         return items
@@ -970,23 +1111,21 @@ class ChatWindow(BasePage):
                 'time':    str,    # timestamp label attached to this message
             }
 
-        Collection strategy — "overlap merge":
+        Collection strategy — "small-step adjacent overlap merge":
             Each scroll position yields a raw batch of (kind, content) items
             from UIA GetChildren (observed order: newest → oldest, i.e.
-            bottom-to-top). Consecutive batches share an overlapping tail/head
-            region because the scroll step is smaller than the viewport.
+            bottom-to-top). We keep the wheel step intentionally small so
+            adjacent batches are more likely to overlap.
 
-            Instead of deduplicating individual messages (which fails because
-            UIA RuntimeId is recycled across scrolls, and content-based dedup
-            loses legitimately repeated messages like two identical emoji),
-            we detect the overlap between consecutive batches via suffix-prefix
-            matching on the full (kind, content) sequence — including time
-            separators, which act as reliable anchors — and stitch the
-            non-overlapping tails together.
+            We then merge only adjacent batches by suffix-prefix matching on
+            the full (kind, content) sequence — including time separators,
+            which act as reliable anchors. This is safer than global content-
+            based dedup because true repeated messages are preserved unless
+            they are part of the actual viewport overlap.
 
-            After stitching, the merged sequence is reversed to oldest-first
-            and a single forward pass assigns time labels from the naturally-
-            positioned time separators.
+            If no reliable overlap is found, the full batch is kept rather
+            than dropped. This prefers possible duplicates over silent data
+            loss.
 
         Args:
             target:      Contact or group name
@@ -1007,6 +1146,9 @@ class ChatWindow(BasePage):
         history_range = self._get_chat_history_range(since)
         today = date.today()
         yesterday = today - timedelta(days=1)
+        max_batch_count = max(60, min(max_count * 4, 240))
+        if since == 'all':
+            max_batch_count = max(max_batch_count, 320)
 
         if not self.open_chat(target, target_type):
             logger.error(f"Failed to open chat: {target}")
@@ -1027,21 +1169,21 @@ class ChatWindow(BasePage):
         self._scroll_message_list_to_bottom(msg_list, cx, cy)
 
         # ------- Phase 1: collect raw batches -------
-        # Each batch is a list of (kind, content) tuples in UIA iteration
-        # order (newest-first). Time separators are kept in the sequence —
-        # they serve as reliable anchors for overlap detection and for
-        # post-merge time assignment.
+        # Each batch is a list of (kind, content) tuples in UIA visual
+        # top-to-bottom order (older-first within the current viewport).
+        # Time separators are kept in the sequence — they serve as anchors
+        # for overlap detection and later time assignment.
         all_batches: List[List[tuple]] = []
         stuck_count = 0
         prev_sig: Optional[tuple] = None
         stop_reason = ''
 
         while True:
-            raw = self._read_visible_chat_items(msg_list)
-            batch: List[tuple] = [(kind, name) for kind, name, _rid in raw]
+            raw_items = self._read_visible_chat_items(msg_list)
+            batch: List[tuple[str, str]] = [(item.kind, item.name) for item in raw_items]
 
             # Scroll-stuck detection (first 5 non-time items as signature)
-            sig = tuple((k, c[:40]) for k, c in batch if k != 'time')[:5]
+            sig = self._history_batch_signature(raw_items)
             if sig and sig == prev_sig:
                 stuck_count += 1
             else:
@@ -1071,46 +1213,30 @@ class ChatWindow(BasePage):
             if stuck_count >= 5:
                 stop_reason = "reached top (scroll stuck)"
                 break
+            if len(all_batches) >= max_batch_count:
+                stop_reason = f"hit safety batch cap={max_batch_count}"
+                break
 
             # Re-assert focus in case another event stole it.
             try:
                 msg_list.SetFocus()
             except Exception:
                 pass
-            self._scroll_message_list(cx, cy, delta=360, steps=3, step_delay=0.1, settle_time=0.8)
+            self._scroll_message_list(cx, cy, delta=240, steps=1, step_delay=0.08, settle_time=0.6)
 
-        # ------- Phase 2: concatenate + reverse + deduplicate -------
-        # All batches are simply concatenated (newest-first), reversed to
-        # oldest-first, then a single forward pass:
-        #   * assigns time labels from naturally-positioned separators
-        #   * deduplicates by content (first occurrence wins)
-        #   * applies the since-range filter
-        #
-        # Content-based dedup will merge legitimately repeated identical
-        # messages (e.g. two "[呲牙]" in a row), but this is an acceptable
-        # trade-off: it never produces false duplicates, and for downstream
-        # AI summarisation the loss of a repeated emoji is negligible.
+        # ------- Phase 2: adjacent-batch overlap merge -------
         if not all_batches:
             return []
 
-        merged: List[tuple] = []
-        for batch in all_batches:
-            merged.extend(batch)
-        merged.reverse()  # now oldest-first
+        merged: List[tuple[str, str]] = self._merge_history_batches(all_batches)
 
         current_ts = ''
-        seen_content: set = set()
         result: list = []
 
         for kind, content in merged:
             if kind == 'time':
                 current_ts = content
                 continue
-
-            # Content-based dedup: keep the first occurrence only.
-            if content in seen_content:
-                continue
-            seen_content.add(content)
 
             # Apply since-range filter using the most recently seen separator.
             if current_ts:

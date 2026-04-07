@@ -1,0 +1,50 @@
+{
+  "virtual": true,
+  "description": "Bundled placeholder project cases used for demo scoring. Replace with project_cases.json when real internal case history is available.",
+  "cases": [
+    {
+      "id": "wifi-doorbell-demo",
+      "title": "WiFi 可视门铃 Demo",
+      "summary": "典型的 WiFi 音视频预研项目，需要摄像头、双向语音和远程联网。",
+      "outcome": "使用视频主控路线推进，需要提前确认视频编码与回声消除能力。",
+      "scenario_tags": ["wifi_audio_video", "video_device"],
+      "chips": ["LOB-V5", "LOB-AI8"],
+      "attention_points": ["摄像头接口", "双向语音", "带宽与码流", "远程升级"],
+      "recommended_when": ["客户明确需要 WiFi + 摄像头 + 语音"],
+      "not_recommended_when": ["客户仅做超低功耗单向传感器"]
+    },
+    {
+      "id": "voice-terminal-demo",
+      "title": "联网语音终端",
+      "summary": "偏语音交互和播报的终端设备，强调低功耗和成本控制。",
+      "outcome": "适合音频路线芯片，需求重点在录音、播放和联网稳定性。",
+      "scenario_tags": ["audio_terminal", "networked_device"],
+      "chips": ["LOB-W1"],
+      "attention_points": ["麦克风数量", "唤醒方式", "低功耗策略"],
+      "recommended_when": ["客户只需要语音交互，不需要视频"],
+      "not_recommended_when": ["客户后续大概率会加摄像头视频"]
+    },
+    {
+      "id": "edge-ai-camera",
+      "title": "边缘 AI 摄像终端",
+      "summary": "带摄像头和本地识别能力的项目，通常需要视频编码和 AI 推理。",
+      "outcome": "适合边缘 AI 主控，但要提前确认模型大小、算法输入和散热预算。",
+      "scenario_tags": ["edge_ai", "video_device"],
+      "chips": ["LOB-AI8"],
+      "attention_points": ["算法模型大小", "内存预算", "推理实时性"],
+      "recommended_when": ["客户需要本地识别/分析"],
+      "not_recommended_when": ["客户只做简单联网采集"]
+    },
+    {
+      "id": "low-power-node",
+      "title": "低功耗连接节点",
+      "summary": "用于简单连接和状态上报的低功耗节点，不适合复杂多媒体。",
+      "outcome": "适合 BLE/低功耗路线，功能边界要提前卡清。",
+      "scenario_tags": ["networked_device"],
+      "chips": ["LOB-LP2"],
+      "attention_points": ["功耗目标", "连接方式", "是否需要本地交互"],
+      "recommended_when": ["客户强调续航和轻量连接"],
+      "not_recommended_when": ["客户要做音频或视频能力"]
+    }
+  ]
+}

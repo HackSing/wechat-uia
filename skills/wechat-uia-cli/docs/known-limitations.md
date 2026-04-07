@@ -1,43 +1,230 @@
 # Known Limitations
 
-## 1. Content-based dedup merges identical messages
+Updated for the current optimized UIA history collector on 2026-04-07.
 
-**Affected**: `get_chat_history` in `scripts/vendor/wx4py/pages/chat_window.py`
+The 2026-04-07 update fixed the most obvious duplication bug by switching
+`get_chat_history()` from global content-based dedup to adjacent-batch
+overlap merge. That improved real chats such as `AIWare` and `一辣`.
 
-**Symptom**: If a user sends the exact same text or emoji twice in a conversation (e.g. two `[呲牙]` in a row), only one copy appears in the output.
-
-**Root cause**: `get_chat_history` scrolls through the chat and collects messages across multiple overlapping viewport batches. To eliminate duplicates caused by viewport overlap, it deduplicates by message content (first occurrence wins). This cannot distinguish "same message seen twice across batches" from "two genuinely different messages with identical content".
-
-**Why not use UIA RuntimeId?** Attempted and abandoned (2026-04-05). WeChat's Qt/mmui UIA provider **recycles RuntimeId** when controls scroll in/out of the viewport — the same RID gets assigned to completely different messages across batches, causing false merges (5+ messages silently dropped in testing).
-
-**Why not use suffix-prefix overlap merge?** Also attempted and abandoned (2026-04-06). WeChat's Qt wheel handler + varying message heights + DPI scaling make the scroll-step-to-viewport-size ratio unpredictable. Consecutive batches may have no overlap (gap) or partial overlap, causing suffix-prefix matching to fail. Results ranged from massive duplication (42 msgs vs 22 real) to partial duplication (30-31 msgs).
-
-**Impact**: For the primary use case (AI-generated daily sales reports), losing a repeated emoji or short phrase is negligible — AI summarisation naturally ignores duplicate expressions. Tested with 22 real messages → output 21 (one duplicate emoji merged).
-
-**Future fix path**: If a future WeChat version or UIA provider update makes RuntimeId stable across scroll batches, `get_chat_history` can switch back to RID-based dedup. The `_read_visible_chat_items` method already captures RuntimeId in its return value for this purpose.
+However, the UIA solution is still a UI-layer collector, not a database
+reader. The remaining limits below are intentional "open risks" that other
+agents should know before relying on the output.
 
 ---
 
-## 2. Search result group header may be missing
+## 1. Pagination is still heuristic, not exact
 
-**Affected**: `_find_target_result` / `_parse_search_results` in `scripts/vendor/wx4py/pages/chat_window.py`
+**Affected**: `get_chat_history`, `export-history`, `daily-report-fetch`, `customer-followup`
 
-**Symptom**: `open_chat` fails with `TargetNotFoundError` even though the contact exists in WeChat.
+**Current implementation**:
 
-**Root cause**: WeChat 4.x search popup sometimes omits group header rows (e.g. the "联系人" label that normally appears above contact results). The `_parse_search_results` parser groups items by their preceding header; when no header is present, items land in the `"未知"` bucket. The original `_find_target_result` only checked `"联系人"`, `"群聊"`, and `"功能"` groups.
+- reads visible chat controls from `chat_message_list`
+- treats `GetChildren()` as visual top-to-bottom order
+- scrolls upward with a small mouse-wheel step
+- merges adjacent batches by overlap on `(kind, content)` sequences
+- stops when it sees an older timestamp, hits the safety cap, or the viewport stops changing
 
-**Fix applied** (2026-04-05): `_find_target_result` now falls back to scanning all non-noise groups (excluding `"搜索网络结果"` and `"聊天记录"`) for items with `auto_id` starting with `search_item_` and an exact name match. This catches contacts in the `"未知"` bucket.
+**What can still go wrong**:
 
-**Diagnostic tip**: If a contact still can't be found, run `search --keyword <name>` and check which group the result appears in. If it only appears in `"聊天记录"` or `"搜索网络结果"`, the fallback won't match — use the `aliases` field in `customers.yaml` to try alternative search terms (e.g. the contact's WeChat ID or a different nickname).
+- if one scroll step jumps too far, consecutive batches may have no reliable overlap
+- if WeChat's list stops reacting near a time separator, collection ends with `reached top (scroll stuck)`
+- if the provider re-renders the same viewport repeatedly, the collector may stop before the true top
+- if no overlap is found, the implementation keeps the whole batch rather than dropping it, which means duplicates are still possible on some chats
+
+**Why this still exists**:
+
+- WeChat 4.x UIA does not expose stable database-like message ids
+- wheel-to-viewport movement depends on bubble height, DPI, layout, and rich-message rendering
+
+**Operational advice**:
+
+- prefer daily incremental capture with `--since today` for production customer tracking
+- treat `--since all` as a best-effort history export, not an audit-grade export
+- if a new target is important, validate it with a small probe before trusting a large batch run
 
 ---
 
-## 3. Sender information unavailable
+## 2. `reached top (scroll stuck)` does not always mean the true start of the conversation
 
-**Affected**: All chat history collection (`get_chat_history`, `daily-report-fetch`)
+**Affected**: `get_chat_history`
 
-**Symptom**: Messages in the output have no sender field — you cannot tell which messages were sent by the sales rep vs. the customer.
+**Symptom**:
 
-**Root cause**: WeChat 4.x's Qt UIA provider does not expose sender names or direction on message bubble controls. This is a platform-level limitation, not a bug in wx4py.
+Logs may end with:
 
-**Workaround**: The downstream AI layer (Claude) infers sender from conversational context (sentence patterns, question-answer flow, tone). For the daily sales report use case, this inference is typically accurate enough. The `notes` field in `customers.yaml` can provide persona hints to improve inference quality.
+```text
+stop='reached top (scroll stuck)'
+```
+
+This means the visible batch signature stopped changing. It does **not**
+guarantee that WeChat exposed the absolute first message in the conversation.
+
+**What it really means**:
+
+- the list no longer advanced under the current UIA + wheel interaction
+- sometimes that is the true top
+- sometimes it is just a UI dead-zone or non-moving viewport
+
+**Practical impact**:
+
+- for daily follow-up reports, this is usually acceptable
+- for full-history reconstruction, this remains a real accuracy limit
+
+---
+
+## 3. Time information is block-level, not per-message exact time
+
+**Affected**: all chat-history collection and downstream reports
+
+**Symptom**:
+
+Many consecutive messages may all show the same time such as `13:55`.
+
+**Root cause**:
+
+WeChat UIA exposes visible time separators, not precise per-message send
+timestamps. The collector attaches the most recently seen separator to the
+following messages in that block.
+
+**Impact**:
+
+- message ordering within a block is preserved
+- exact per-message timestamps are unavailable
+- daily reports can say "messages happened around 13:55", but not "this exact line was sent at 13:57:23"
+
+**Related limit**:
+
+The CLI only supports these range selectors:
+
+- `today`
+- `yesterday`
+- `week`
+- `all`
+
+There is no native arbitrary range like "last 15 days". For that use case,
+the recommended path is daily accumulation through `customer-followup`.
+
+---
+
+## 4. Sender identity is unavailable
+
+**Affected**: `get_chat_history`, `daily-report-fetch`, `customer-followup`
+
+**Symptom**:
+
+Messages have no sender field, so you cannot directly tell whether a line was
+sent by the sales rep or by the customer.
+
+**Root cause**:
+
+WeChat 4.x's Qt UIA provider does not expose sender name or left/right
+bubble direction as stable structured data.
+
+**Impact**:
+
+- reports must use neutral language such as "the conversation mentions..."
+- any "who said what" reasoning is heuristic
+- this is acceptable for sales follow-up drafts, but not for strict audit use
+
+**Workaround**:
+
+- let the downstream agent infer speaker roles from context
+- keep `company`, `notes`, and customer metadata in `customers.yaml` accurate
+
+---
+
+## 5. Search/open-chat is better than before, but still brittle
+
+**Affected**: `open_chat`, `daily-report-fetch`, `customer-followup`
+
+**Current improvement**:
+
+If WeChat omits the normal search-result group header like `联系人`, the code
+now falls back to exact-match scanning in non-noise groups such as `未知`.
+
+**What can still go wrong**:
+
+- contact remark names drift over time
+- the search result may only appear under `聊天记录` or `搜索网络结果`
+- exact-match fallback will not rescue partial or fuzzy matches
+
+**Operational advice**:
+
+- use `aliases` in `customers.yaml`
+- prefer stable remark names / WeChat IDs as search targets
+- when one customer starts failing, update config instead of hardcoding ad hoc names elsewhere
+
+---
+
+## 6. Rich message types are still lossy
+
+**Affected**: history export and downstream reports
+
+**Current behavior**:
+
+The collector mainly emits:
+
+- `text`
+- `link`
+- `system`
+
+**What this means in practice**:
+
+- file cards often come out as one `link` item with multiline text
+- images, voice, mini-program cards, quoted cards, transfers, red packets, and other rich items may be simplified or partially represented
+- reports flatten multiline content for readability, which is good for summary reading but loses some original UI shape
+
+**Impact**:
+
+- enough for many sales follow-up scenarios
+- not enough for exact media-forensics or message-type analytics
+
+---
+
+## 7. Runtime conditions still matter a lot
+
+**Affected**: all UIA commands
+
+**Symptom**:
+
+Commands fail intermittently or return incomplete results when the environment changes during capture.
+
+**Examples**:
+
+- WeChat not in front
+- user manually clicks around while capture is running
+- focus moves away from the message list
+- window size or DPI changes
+- a popup obscures the chat area
+
+**Operational advice**:
+
+- keep WeChat open, logged in, and stable during runs
+- avoid interacting with the WeChat window while a capture is in progress
+- use `check-env` and a small probe first when runtime state is unclear
+
+---
+
+## 8. The customer-followup pipeline is operationally useful, not ground truth
+
+**Affected**: `customer-followup`
+
+**Important framing**:
+
+The follow-up pipeline is meant to support day-to-day sales execution:
+
+- daily archive
+- timeline continuity
+- report drafting
+- next-action suggestions
+
+It is **not** a perfect transcript system.
+
+**What other agents should assume**:
+
+- `reports/YYYY-MM-DD/<id>.md` is the best first-draft summary for that day
+- `customers/<id>/timeline.md` is the best continuity document
+- both inherit every limit from the underlying UIA capture
+
+If the user needs exact legal, compliance, or forensic quality, this UIA path
+is the wrong tool.
